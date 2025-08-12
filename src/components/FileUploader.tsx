@@ -12,7 +12,6 @@ import {
   LoadingOverlay,
   List,
   Badge,
-  Divider,
   Tabs
 } from '@mantine/core';
 import { 
@@ -20,18 +19,20 @@ import {
   IconCheck, 
   IconX, 
   IconFileSpreadsheet, 
-  IconFileText,
-  IconPlus 
+  IconFileText
 } from '@tabler/icons-react';
-import { parseAnyFile, parseSingleCSV, ParsedData } from '../utils/parseFile';
+import { parseAnyFile, ParsedData } from '../utils/parseFile';
 import { useDataStore } from '../store/useDataStore';
+import { useValidationStore } from '../store/useValidationStore';
+import { validateAllData } from '../utils/validators';
 
 export default function FileUploader() {
+  // State for upload process
   const [loading, setLoading] = useState(false);
   const [uploadResult, setUploadResult] = useState<ParsedData | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  // Get the store methods
+  // Data store
   const clients = useDataStore((state) => state.clients);
   const workers = useDataStore((state) => state.workers);
   const tasks = useDataStore((state) => state.tasks);
@@ -39,36 +40,51 @@ export default function FileUploader() {
   const setWorkers = useDataStore((state) => state.setWorkers);
   const setTasks = useDataStore((state) => state.setTasks);
 
-  // Handle any file (Excel or CSV)
+  // Validation store
+  const { setErrors, setValidating, clearErrors } = useValidationStore();
+
+  // Handle any file (Excel or CSV) - SINGLE FUNCTION DEFINITION
   const handleFileUpload = async (file: File | null) => {
     if (!file) return;
     
     setLoading(true);
     setUploadError(null);
     setUploadResult(null);
+    clearErrors(); // Clear previous validation errors
     
     try {
       console.log('Uploading file:', file.name);
       const result = await parseAnyFile(file);
       
-      // Update stores (merge with existing data for CSV files)
       const ext = file.name.split('.').pop()?.toLowerCase();
+      
+      // Store the data before validation
+      let finalClients: any[] = [];
+      let finalWorkers: any[] = [];
+      let finalTasks: any[] = [];
       
       if (ext === 'xlsx' || ext === 'xls') {
         // Excel: Replace all data
         setClients(result.clients);
         setWorkers(result.workers);
         setTasks(result.tasks);
+        finalClients = result.clients;
+        finalWorkers = result.workers;
+        finalTasks = result.tasks;
       } else if (ext === 'csv') {
         // CSV: Merge with existing data
+        finalClients = result.clients.length > 0 ? [...clients, ...result.clients] : clients;
+        finalWorkers = result.workers.length > 0 ? [...workers, ...result.workers] : workers;
+        finalTasks = result.tasks.length > 0 ? [...tasks, ...result.tasks] : tasks;
+        
         if (result.clients.length > 0) {
-          setClients([...clients, ...result.clients]);
+          setClients(finalClients);
         }
         if (result.workers.length > 0) {
-          setWorkers([...workers, ...result.workers]);
+          setWorkers(finalWorkers);
         }
         if (result.tasks.length > 0) {
-          setTasks([...tasks, ...result.tasks]);
+          setTasks(finalTasks);
         }
       }
       
@@ -79,6 +95,20 @@ export default function FileUploader() {
         tasks: result.tasks.length,
         errors: result.errors.length
       });
+      
+      // 🚀 TRIGGER VALIDATION AFTER UPLOAD
+      if (finalClients.length > 0 || finalWorkers.length > 0 || finalTasks.length > 0) {
+        setTimeout(() => {
+          console.log('🔍 Starting post-upload validation...');
+          setValidating(true);
+          
+          const validationErrors = validateAllData(finalClients, finalWorkers, finalTasks);
+          setErrors(validationErrors);
+          setValidating(false);
+          
+          console.log('✅ Validation complete:', validationErrors.length, 'issues found');
+        }, 800);
+      }
       
     } catch (error) {
       console.error('Error uploading file:', error);
@@ -94,6 +124,7 @@ export default function FileUploader() {
     setTasks([]);
     setUploadResult(null);
     setUploadError(null);
+    clearErrors();
   };
 
   const totalRecords = clients.length + workers.length + tasks.length;
@@ -217,7 +248,7 @@ export default function FileUploader() {
               
               {uploadResult.errors.length > 0 && (
                 <div>
-                  <Text size="sm" fw={500} c="orange">⚠️ Warnings:</Text>
+                  <Text size="sm" fw={500} c="orange">⚠️ Parsing Warnings:</Text>
                   <List size="sm">
                     {uploadResult.errors.map((error, idx) => (
                       <List.Item key={idx}>
@@ -227,6 +258,10 @@ export default function FileUploader() {
                   </List>
                 </div>
               )}
+              
+              <Text size="xs" c="dimmed" mt="xs">
+                🔍 Running comprehensive validation...
+              </Text>
             </Stack>
           </Alert>
         )}
