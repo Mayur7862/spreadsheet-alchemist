@@ -30,7 +30,7 @@ export default function EntityTabs() {
     if (!text) return;
 
     // Parse English → FilterNode
-    const node = nlToDsl(text);
+    const node = nlToDsl(text, ent);
     if (!node) {
       // You can add a toast/notification here to tell the user the query couldn't be parsed.
       return;

@@ -22,9 +22,11 @@ export default function NLSearchBar({ activeEntity, onApply, onClear }: Props) {
   const setFiltered = useDataStore((s) => s.setFiltered);
 
   // Access base rows from store (we filter locally)
-  const baseRows = useDataStore((s) =>
+ const baseRows = useDataStore((s) =>
     activeEntity === 'clients' ? s.clients : activeEntity === 'workers' ? s.workers : s.tasks
   );
+
+  const fields = (baseRows?.[0] ? Object.keys(baseRows[0]) : []) as string[]; // <-- NEW
 
   async function search() {
     const text = q.trim();
@@ -37,7 +39,8 @@ export default function NLSearchBar({ activeEntity, onApply, onClear }: Props) {
       const res = await fetch('/api/nl', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entity: activeEntity, text }),
+        // Send fields so the server can map "group" to the actual column
+        body: JSON.stringify({ entity: activeEntity, text, fields }), // <-- NEW
       });
 
       const data = await res.json();
