@@ -113,7 +113,7 @@ export default function NLSearchBar({ activeEntity, onApply, onClear }: Props) {
 
       // 3) Apply AI filter
       let node: FilterNode = payload.filter;
-      let subset = applyFilter(baseRows as any[], node);
+      let subset = applyFilter(baseRows as typeof baseRows, node);
 
       // 4) Soft fallback if zero
       if (subset.length === 0) {
