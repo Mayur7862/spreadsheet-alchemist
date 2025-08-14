@@ -1,15 +1,34 @@
-// src/app/page.tsx — updated to include Natural Language search (AI) and to use filtered views
+// src/app/page.tsx — SINGLE SOURCE OF TRUTH fix for filtered views (map IDs -> base rows)
 'use client';
 
-import { Container, Tabs, Text, Badge, Button, Group, Space } from '@mantine/core';
-import { useState } from 'react';
+import { Container, Tabs, Text, Badge, Button, Group, Space, Alert } from '@mantine/core';
+import { useMemo, useRef, useState } from 'react';
 import FileUploader from '@/components/FileUploader';
 import DataGrid from '@/components/DataGrid';
 import ValidationPanel from '@/components/ValidationPanel';
 import { useDataStore } from '@/store/useDataStore';
 import { useValidationStore } from '@/store/useValidationStore';
 import { validateAllData } from '@/utils/validators';
-import NLSearchBar from '@/components/NLSearchBar'; // ⬅️ NEW: AI Natural Language search bar
+import NLSearchBar from '@/components/NLSearchBar';
+import RuleBuilderPanel from '@/components/RuleBuilderPanel';
+
+// Helper: consistent ID getter for any entity row
+function getEntityId(
+  row: any,
+  ent: 'clients' | 'workers' | 'tasks'
+): string {
+  if (!row) return '';
+  if (ent === 'clients') return String(row.ClientID ?? row.id ?? '');
+  if (ent === 'workers') return String(row.WorkerID ?? row.id ?? '');
+  return String(row.TaskID ?? row.id ?? '');
+}
+
+// Make a fast map: id -> row (for base rows)
+function mapById(rows: any[], ent: 'clients' | 'workers' | 'tasks') {
+  const m = new Map<string, any>();
+  for (const r of rows) m.set(getEntityId(r, ent), r);
+  return m;
+}
 
 export default function HomePage() {
   // Base data
@@ -17,19 +36,22 @@ export default function HomePage() {
   const workers = useDataStore((s) => s.workers);
   const tasks   = useDataStore((s) => s.tasks);
 
-  // Filtered views (non-destructive)
+  // Filtered *IDs* (ALLOW either IDs or row objects coming from old code)
+  // NOTE: we keep the same API name `filtered` & `setFiltered` to avoid breaking the rest of your app.
   const filtered = useDataStore((s) => s.filtered);
   const setFiltered = useDataStore((s) => s.setFiltered);
 
-  // Active tab (controls which entity NLSearchBar targets)
   const [activeTab, setActiveTab] = useState<string>('clients');
 
   const { summary, setErrors, setValidating } = useValidationStore();
   const totalRecords = clients.length + workers.length + tasks.length;
 
+  // Prevent validator loops when fixes are applied
+  const applyingFixRef = useRef(false);
+
   const runValidation = () => {
+    if (applyingFixRef.current) return; // guard: don't validate mid-fix
     setValidating(true);
-    // Small timeout for UI responsiveness
     setTimeout(() => {
       const errors = validateAllData(clients, workers, tasks);
       setErrors(errors);
@@ -55,11 +77,48 @@ export default function HomePage() {
     }, 200);
   };
 
-  // Helper to pick base or filtered for each entity
+  // View selector: ALWAYS return BASE rows; filtered acts as an ID filter
   const view = (ent: 'clients' | 'workers' | 'tasks') => {
     const base = ent === 'clients' ? clients : ent === 'workers' ? workers : tasks;
-    return filtered[ent] ?? base;
+
+    // No filter → return base
+    const f = filtered[ent];
+    if (!f || (Array.isArray(f) && f.length === 0)) return base;
+
+    // Build base map
+    const baseMap = mapById(base, ent);
+
+    // Accept BOTH “IDs array” and “rows array” (back-compat)
+    const ids = (f as any[]).map(item =>
+      typeof item === 'string' ? item : getEntityId(item, ent)
+    );
+
+    // Map IDs -> base rows; drop missing
+    const proj: any[] = [];
+    for (const id of ids) {
+      const r = baseMap.get(String(id));
+      if (r) proj.push(r);
+    }
+    return proj;
   };
+
+  // Banner state for NL filtering
+  const [filterBanner, setFilterBanner] = useState<{
+    visible: boolean;
+    entity?: 'clients' | 'workers' | 'tasks';
+    source?: 'ai' | 'heuristic';
+    shown?: number;
+    total?: number;
+  }>({ visible: false });
+
+  const clearBanner = () => setFilterBanner({ visible: false });
+
+  // Memo totals for banner
+  const totals = useMemo(() => ({
+    clients: clients.length,
+    workers: workers.length,
+    tasks: tasks.length,
+  }), [clients.length, workers.length, tasks.length]);
 
   return (
     <Container size="xl" py="xl">
@@ -85,36 +144,71 @@ export default function HomePage() {
       <Space h="md" />
       <FileUploader />
 
-      {/* ⬅️ Natural Language Search (AI) */}
+      {/* NL Search */}
       {totalRecords > 0 && (
         <>
           <Space h="lg" />
-          <NLSearchBar
-            activeEntity={activeTab as 'clients' | 'workers' | 'tasks'}
-            onApply={(entity, filterResult) => {
-              // filterResult should already be applied by the component,
-              // but you can inspect it here if you want.
-              // e.g., console.log('Applied filter from:', filterResult.source);
-            }}
-            onClear={(entity) => setFiltered(entity, null)}
-          />
+          
+
+          {filterBanner.visible && (
+            <>
+              <Space h="md" />
+              <Alert color="green" variant="light" title="Results generated">
+                ✅ Results generated via <b>{filterBanner.source?.toUpperCase()}</b> — here are the filtered results for{' '}
+                <b>{(filterBanner.entity ?? '').toUpperCase()}</b> (
+                {filterBanner.shown} of {filterBanner.total} shown).
+              </Alert>
+            </>
+          )}
         </>
       )}
 
-      {/* Validation panel */}
+      {/* Validation panel (unchanged API) */}
       {totalRecords > 0 && (
         <div style={{ marginTop: '2rem' }}>
-          <ValidationPanel onJumpToRow={handleJumpToRow} />
+          <ValidationPanel
+            onJumpToRow={handleJumpToRow}
+            // Guard validator during fixes to avoid loops
+            onBeforeApplyFix={() => { applyingFixRef.current = true; }}
+            onAfterApplyFix={() => {
+              applyingFixRef.current = false;
+              // re-run once after fixes settle
+              runValidation();
+            }}
+          />
         </div>
       )}
 
-    <NLSearchBar
-      activeEntity={activeTab as 'clients' | 'workers' | 'tasks'}
-      onApply={(entity, result) => { /* optional: inspect result.source */ }}
-      onClear={(entity) => { /* optional */ }}
-     />
+      {/* Rules Panel */}
+      {totalRecords > 0 && (
+        <>
+          <Space h="xl" />
+          <RuleBuilderPanel data={{ clients, workers, tasks }} />
+        </>
+      )}
 
-      {/* Tabs + Grids (render filtered view if present) */}
+      <NLSearchBar
+            activeEntity={activeTab as 'clients' | 'workers' | 'tasks'}
+            onApply={(entity, filterResult) => {
+              // Normalize to ID list so the grid renders the BASE rows
+              const rows = (filterResult?.rows ?? []) as any[];
+              const ids = rows.map(r => getEntityId(r, entity)).filter(Boolean);
+              setFiltered(entity, ids); // ← store keeps filtered as IDs (or accepts IDs)
+              setFilterBanner({
+                visible: true,
+                entity,
+                source: (filterResult?.source as 'ai' | 'heuristic') ?? 'ai',
+                shown: ids.length,
+                total: totals[entity],
+              });
+            }}
+            onClear={(entity) => {
+              setFiltered(entity, null);
+              clearBanner();
+            }}
+          />
+
+      {/* Tabs + Grids */}
       {totalRecords > 0 ? (
         <div style={{ marginTop: '2rem' }}>
           <Tabs value={activeTab} onChange={(v) => setActiveTab((v as string) || 'clients')}>
@@ -122,16 +216,19 @@ export default function HomePage() {
               <Tabs.Tab value="clients">
                 👥 Clients
                 <Badge size="sm" ml="xs" color="blue">{view('clients').length}</Badge>
+                {filtered.clients && <Badge size="sm" ml="xs" variant="light" color="green">Filtered</Badge>}
                 {summary.clientErrors > 0 && <Badge size="sm" ml="xs" color="red">{summary.clientErrors}</Badge>}
               </Tabs.Tab>
               <Tabs.Tab value="workers">
                 👷 Workers
                 <Badge size="sm" ml="xs" color="green">{view('workers').length}</Badge>
+                {filtered.workers && <Badge size="sm" ml="xs" variant="light" color="green">Filtered</Badge>}
                 {summary.workerErrors > 0 && <Badge size="sm" ml="xs" color="red">{summary.workerErrors}</Badge>}
               </Tabs.Tab>
               <Tabs.Tab value="tasks">
                 📋 Tasks
                 <Badge size="sm" ml="xs" color="orange">{view('tasks').length}</Badge>
+                {filtered.tasks && <Badge size="sm" ml="xs" variant="light" color="green">Filtered</Badge>}
                 {summary.taskErrors > 0 && <Badge size="sm" ml="xs" color="red">{summary.taskErrors}</Badge>}
               </Tabs.Tab>
             </Tabs.List>
@@ -139,6 +236,7 @@ export default function HomePage() {
             <Tabs.Panel value="clients" pt="lg">
               <Text mb="md" size="sm" c="dimmed">
                 Clients Data ({view('clients').length} records)
+                {filtered.clients && <Badge size="sm" ml="xs" variant="light" color="green">Filtered</Badge>}
                 {summary.clientErrors > 0 && <Badge size="sm" ml="xs" color="red">{summary.clientErrors} issues</Badge>}
               </Text>
               <DataGrid rowData={view('clients')} entityType="clients" />
@@ -147,6 +245,7 @@ export default function HomePage() {
             <Tabs.Panel value="workers" pt="lg">
               <Text mb="md" size="sm" c="dimmed">
                 Workers Data ({view('workers').length} records)
+                {filtered.workers && <Badge size="sm" ml="xs" variant="light" color="green">Filtered</Badge>}
                 {summary.workerErrors > 0 && <Badge size="sm" ml="xs" color="red">{summary.workerErrors} issues</Badge>}
               </Text>
               <DataGrid rowData={view('workers')} entityType="workers" />
@@ -155,6 +254,7 @@ export default function HomePage() {
             <Tabs.Panel value="tasks" pt="lg">
               <Text mb="md" size="sm" c="dimmed">
                 Tasks Data ({view('tasks').length} records)
+                {filtered.tasks && <Badge size="sm" ml="xs" variant="light" color="green">Filtered</Badge>}
                 {summary.taskErrors > 0 && <Badge size="sm" ml="xs" color="red">{summary.taskErrors} issues</Badge>}
               </Text>
               <DataGrid rowData={view('tasks')} entityType="tasks" />

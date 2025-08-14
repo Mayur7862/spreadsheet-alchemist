@@ -168,7 +168,7 @@ export default function NLSearchBar({ activeEntity, onApply, onClear }: Props) {
             if (e.key === 'Escape') clear();
           }}
         />
-        <Tooltip label='Try: "duration between 2 and 5", "phase includes 3", "group = GroupC"'>
+        <Tooltip label='Try something you want to filter out'>
           <Button onClick={search} loading={loading} leftSection={loading ? <Loader size="xs" /> : undefined}>
             {loading ? 'Asking AI…' : 'Ask AI'}
           </Button>

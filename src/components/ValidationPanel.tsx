@@ -1,151 +1,207 @@
 // src/components/ValidationPanel.tsx
 'use client';
-import { 
-  Paper, 
-  Text, 
-  Badge, 
-  Stack, 
-  Group, 
-  Alert, 
-  ScrollArea, 
+
+import {
+  Paper,
+  Text,
+  Badge,
+  Stack,
+  Group,
+  Alert,
+  ScrollArea,
   Button,
   Collapse,
   ActionIcon,
   Divider,
-  Notification
 } from '@mantine/core';
-import { 
-  IconAlertTriangle, 
-  IconX, 
-  IconCheck, 
+import {
+  IconAlertTriangle,
+  IconCheck,
   IconChevronDown,
   IconChevronUp,
   IconLogicAnd,
-  IconExternalLink
+  IconExternalLink,
 } from '@tabler/icons-react';
 import { useValidationStore } from '../store/useValidationStore';
 import { useDataStore } from '../store/useDataStore';
 import { validateAllData } from '../utils/validators';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+
+type Entity = 'clients' | 'workers' | 'tasks';
 
 interface ValidationPanelProps {
-  onJumpToRow?: (entity: 'clients' | 'workers' | 'tasks', rowIndex: number) => void;
+  onJumpToRow?: (entity: Entity, rowIndex: number) => void;
+  /** Optional guards to prevent validate loops while applying fixes */
+  onBeforeApplyFix?: () => void;
+  onAfterApplyFix?: () => void;
 }
 
-export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
+/* ---------- Stable ID helpers ---------- */
+const getId = (row: any, ent: Entity): string => {
+  if (!row) return '';
+  if (ent === 'clients') return String(row.ClientID ?? row.id ?? '');
+  if (ent === 'workers') return String(row.WorkerID ?? row.id ?? '');
+  return String(row.TaskID ?? row.id ?? '');
+};
+
+const ensureString = (v: any) => (v == null ? '' : String(v));
+
+export default function ValidationPanel({
+  onJumpToRow,
+  onBeforeApplyFix,
+  onAfterApplyFix,
+}: ValidationPanelProps) {
   const { errors, summary, isValidating, setErrors, setValidating, removeError } = useValidationStore();
-  const { clients, workers, tasks, setClients, setWorkers, setTasks } = useDataStore();
+  const { clients, workers, tasks } = useDataStore();
+
+  const setState = useDataStore.setState; // imperative setter for batched updates
+  const getState = useDataStore.getState; // read latest
+
   const [fixingErrors, setFixingErrors] = useState<Set<string>>(new Set());
-  const [expandedSections, setExpandedSections] = useState<{
-    errors: boolean;
-    warnings: boolean;
-  }>({ errors: true, warnings: false });
+  const [expandedSections, setExpandedSections] = useState<{ errors: boolean; warnings: boolean }>({
+    errors: true,
+    warnings: false,
+  });
 
-  const criticalErrors = errors.filter(e => e.severity === 'error');
-  const warnings = errors.filter(e => e.severity === 'warning');
+  const criticalErrors = useMemo(() => errors.filter((e) => e.severity === 'error'), [errors]);
+  const warnings = useMemo(() => errors.filter((e) => e.severity === 'warning'), [errors]);
 
-  // Working Jump to Row function
-  const scrollToError = (entityType: 'clients' | 'workers' | 'tasks', rowIndex: number) => {
+  /* ---------- UI helpers ---------- */
+  const scrollToError = (entityType: Entity, rowIndex: number) => {
     if (onJumpToRow) {
       onJumpToRow(entityType, rowIndex);
-    } else {
-      // Fallback: Scroll to the tab and highlight row
-      const tabButton = document.querySelector(`[data-value="${entityType}"]`) as HTMLElement;
-      if (tabButton) {
-        tabButton.click();
-        
-        // Wait for tab to switch, then scroll to row
-        setTimeout(() => {
-          const targetRow = document.querySelector(`[data-row-index="${rowIndex}"]`) as HTMLElement;
-          if (targetRow) {
-            targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            targetRow.style.backgroundColor = '#fff3cd';
-            setTimeout(() => {
-              targetRow.style.backgroundColor = '';
-            }, 3000);
-          }
-        }, 200);
-      }
+      return;
+    }
+    const tabButton = document.querySelector(`[data-value="${entityType}"]`) as HTMLElement;
+    if (tabButton) {
+      tabButton.click();
+      setTimeout(() => {
+        const targetRow = document.querySelector(`[data-row-index="${rowIndex}"]`) as HTMLElement;
+        if (targetRow) {
+          targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          const originalBg = targetRow.style.backgroundColor;
+          (targetRow as any).style.backgroundColor = '#fff3cd';
+          setTimeout(() => {
+            (targetRow as any).style.backgroundColor = originalBg;
+          }, 3000);
+        }
+      }, 200);
     }
   };
 
-  // Working Auto-Fix function
+  /* ---------- Revalidation (with guard hooks) ---------- */
+  const revalidate = () => {
+    // If parent provided guards, let it handle revalidation
+    if (onAfterApplyFix) {
+      onAfterApplyFix();
+      return;
+    }
+    // Fallback: local revalidation
+    setValidating(true);
+    const s = getState();
+    const nextErrors = validateAllData(s.clients, s.workers, s.tasks);
+    setErrors(nextErrors);
+    setValidating(false);
+  };
+
+  /* ---------- Single Auto-Fix (ID-based, not rowIndex) ---------- */
   const applyAutoFix = async (error: any) => {
-    if (!error.autoFixValue) return;
-    
-    setFixingErrors(prev => new Set([...prev, error.id]));
+    if (error?.autoFixValue === undefined) return;
+
+    setFixingErrors((prev) => new Set([...prev, error.id]));
+    onBeforeApplyFix?.();
 
     try {
-      // Get current data
-      let currentData: any[];
-      let updateFunction: (data: any[]) => void;
+      const entity: Entity = error.entity;
+      const field: string = ensureString(error.field);
+      // Prefer error.entityId; fallback to base row by provided rowIndex
+      const baseArr = entity === 'clients' ? clients : entity === 'workers' ? workers : tasks;
+      const id = ensureString(error.entityId) || getId(baseArr[error.rowIndex], entity);
+      if (!id) throw new Error('Cannot resolve stable entity ID for auto-fix');
 
-      switch (error.entity) {
-        case 'clients':
-          currentData = [...clients];
-          updateFunction = setClients;
-          break;
-        case 'workers':
-          currentData = [...workers];
-          updateFunction = setWorkers;
-          break;
-        case 'tasks':
-          currentData = [...tasks];
-          updateFunction = setTasks;
-          break;
-        default:
-          return;
-      }
-
-      // Apply the fix
-      if (error.rowIndex >= 0 && error.rowIndex < currentData.length) {
-        currentData[error.rowIndex] = {
-          ...currentData[error.rowIndex],
-          [error.field]: error.autoFixValue
-        };
-
-        // Update the store
-        updateFunction(currentData);
-
-        // Remove this specific error
-        removeError(error.id);
-
-        // Re-run validation after a short delay
-        setTimeout(() => {
-          setValidating(true);
-          const validationErrors = validateAllData(
-            error.entity === 'clients' ? currentData : clients,
-            error.entity === 'workers' ? currentData : workers,
-            error.entity === 'tasks' ? currentData : tasks
-          );
-          setErrors(validationErrors);
-          setValidating(false);
-        }, 300);
-
-        console.log(`✅ Auto-fixed: ${error.entity} row ${error.rowIndex + 1}, field ${error.field}`);
-      }
-    } catch (fixError) {
-      console.error('Auto-fix failed:', fixError);
-    } finally {
-      setFixingErrors(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(error.id);
-        return newSet;
+      // Apply patch immutably by ID to the BASE array
+      setState((s) => {
+        const key = entity;
+        const arr = (s as any)[key] as any[];
+        const next = arr.map((r) => (getId(r, entity) === id ? { ...r, [field]: error.autoFixValue } : r));
+        return { [key]: next } as any;
       });
+
+      // Remove just this error; full revalidation will refresh rest
+      removeError(error.id);
+    } catch (e) {
+      console.error('Auto-fix failed:', e);
+    } finally {
+      setFixingErrors((prev) => {
+        const n = new Set(prev);
+        n.delete(error.id);
+        return n;
+      });
+      revalidate();
     }
   };
 
-  // Bulk auto-fix for all fixable errors
+  /* ---------- Bulk Auto-Fix (batched, single render, single revalidate) ---------- */
   const applyAllAutoFixes = async () => {
-    const fixableErrors = errors.filter(e => e.autoFixValue !== undefined);
-    
-    for (const error of fixableErrors) {
-      await applyAutoFix(error);
-      // Small delay between fixes to avoid race conditions
-      await new Promise(resolve => setTimeout(resolve, 100));
+    const fixable = errors.filter((e) => e.autoFixValue !== undefined);
+    if (fixable.length === 0) return;
+
+    // Visually mark as fixing
+    setFixingErrors(new Set(fixable.map((e) => e.id)));
+    onBeforeApplyFix?.();
+
+    try {
+      // Aggregate patches as: { entity: { id: { field: value, ... } } }
+      const patches: Record<Entity, Record<string, Record<string, any>>> = {
+        clients: {},
+        workers: {},
+        tasks: {},
+      };
+
+      for (const e of fixable) {
+        const entity: Entity = e.entity;
+        const field: string = ensureString(e.field);
+        const baseArr = entity === 'clients' ? clients : entity === 'workers' ? workers : tasks;
+        const id = ensureString(e.entityId) || getId(baseArr[e.rowIndex], entity);
+        if (!id) continue;
+        if (!patches[entity][id]) patches[entity][id] = {};
+        patches[entity][id][field] = e.autoFixValue;
+      }
+
+      // Single state update for all entities
+      setState((s) => {
+        const next: any = {};
+
+        (['clients', 'workers', 'tasks'] as Entity[]).forEach((ent) => {
+          const arr = (s as any)[ent] as any[];
+          const entPatches = patches[ent];
+          if (!entPatches || Object.keys(entPatches).length === 0) {
+            next[ent] = arr;
+            return;
+          }
+          next[ent] = arr.map((r) => {
+            const id = getId(r, ent);
+            const patch = entPatches[id];
+            return patch ? { ...r, ...patch } : r;
+          });
+        });
+
+        return next;
+      });
+
+      // Remove fixed errors locally to reduce flicker; full revalidation will reconcile
+      // (If your store recomputes errors from scratch, this is optional)
+      // Here we simply rely on revalidation to refresh everything.
+    } catch (e) {
+      console.error('Fix-all failed:', e);
+    } finally {
+      // Clear fixing flags
+      setFixingErrors(new Set());
+      revalidate();
     }
   };
 
+  /* ---------- Rendering ---------- */
   if (isValidating) {
     return (
       <Paper p="md" withBorder>
@@ -172,28 +228,28 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
   }
 
   const toggleSection = (section: 'errors' | 'warnings') => {
-    setExpandedSections(prev => ({
-      ...prev,
-      [section]: !prev[section]
-    }));
+    setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
   };
 
-  const fixableErrorsCount = errors.filter(e => e.autoFixValue !== undefined).length;
+  const fixableErrorsCount = errors.filter((e) => e.autoFixValue !== undefined).length;
 
   return (
     <Paper withBorder>
       <Stack gap="md">
-        {/* Enhanced Summary Header */}
-        <Paper p="md" style={{ 
-          backgroundColor: summary.totalErrors > 0 ? '#fff5f5' : '#fffbf0',
-          borderBottom: '1px solid #eee'
-        }}>
+        {/* Summary Header */}
+        <Paper
+          p="md"
+          style={{
+            backgroundColor: summary.totalErrors > 0 ? '#fff5f5' : '#fffbf0',
+            borderBottom: '1px solid #eee',
+          }}
+        >
           <Group justify="space-between">
             <div>
               <Text fw={600} size="lg">🔍 Validation Results</Text>
               <Text size="sm" c="dimmed">
-                Last run: {summary.lastValidation?.toLocaleTimeString() || 'Never'} • 
-                Click on highlighted cells in tables to edit and fix issues
+                Last run: {summary.lastValidation?.toLocaleTimeString() || 'Never'} •
+                {' '}Click on highlighted cells in tables to edit and fix issues
               </Text>
             </div>
             <Group gap="xs">
@@ -236,7 +292,7 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
           </Group>
         </Paper>
 
-        {/* Critical Errors with Working Jump Links */}
+        {/* Critical Errors */}
         {criticalErrors.length > 0 && (
           <div>
             <Group justify="space-between" style={{ cursor: 'pointer' }} onClick={() => toggleSection('errors')}>
@@ -258,8 +314,8 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
                         <div style={{ flex: 1 }}>
                           <Group gap="xs" mb="xs">
                             <Badge size="xs" color="red">{error.entity}</Badge>
-                            <Badge 
-                              size="xs" 
+                            <Badge
+                              size="xs"
                               variant="outline"
                               style={{ cursor: 'pointer' }}
                               onClick={() => scrollToError(error.entity, error.rowIndex)}
@@ -283,10 +339,10 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
                           )}
                         </div>
                         <Stack gap="xs" align="center" style={{ minWidth: 120 }}>
-                          <Button 
-                            size="xs" 
-                            variant="light" 
-                            color="blue" 
+                          <Button
+                            size="xs"
+                            variant="light"
+                            color="blue"
                             leftSection={<IconExternalLink size="0.7rem" />}
                             onClick={() => scrollToError(error.entity, error.rowIndex)}
                             fullWidth
@@ -294,10 +350,10 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
                             Jump to Row
                           </Button>
                           {error.autoFixValue !== undefined && (
-                            <Button 
-                              size="xs" 
-                              variant="light" 
-                              color="green" 
+                            <Button
+                              size="xs"
+                              variant="light"
+                              color="green"
                               leftSection={<IconLogicAnd size="0.7rem" />}
                               onClick={() => applyAutoFix(error)}
                               loading={fixingErrors.has(error.id)}
@@ -318,7 +374,7 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
 
         {criticalErrors.length > 0 && warnings.length > 0 && <Divider />}
 
-        {/* Warnings with Working Jump Links */}
+        {/* Warnings */}
         {warnings.length > 0 && (
           <div>
             <Group justify="space-between" style={{ cursor: 'pointer' }} onClick={() => toggleSection('warnings')}>
@@ -340,8 +396,8 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
                         <div style={{ flex: 1 }}>
                           <Group gap="xs" mb="xs">
                             <Badge size="xs" color="orange">{error.entity}</Badge>
-                            <Badge 
-                              size="xs" 
+                            <Badge
+                              size="xs"
                               variant="outline"
                               style={{ cursor: 'pointer' }}
                               onClick={() => scrollToError(error.entity, error.rowIndex)}
@@ -352,9 +408,7 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
                           </Group>
                           <Text size="sm" fw={500} mb="xs">{error.message}</Text>
                           {error.suggestion && (
-                            <Text size="xs" c="dimmed">
-                              💡 {error.suggestion}
-                            </Text>
+                            <Text size="xs" c="dimmed">💡 {error.suggestion}</Text>
                           )}
                           {error.autoFixValue !== undefined && (
                             <Paper p="xs" mt="xs" style={{ backgroundColor: '#fff4e6' }}>
@@ -365,10 +419,10 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
                           )}
                         </div>
                         <Stack gap="xs" align="center" style={{ minWidth: 120 }}>
-                          <Button 
-                            size="xs" 
-                            variant="light" 
-                            color="orange" 
+                          <Button
+                            size="xs"
+                            variant="light"
+                            color="orange"
                             leftSection={<IconExternalLink size="0.7rem" />}
                             onClick={() => scrollToError(error.entity, error.rowIndex)}
                             fullWidth
@@ -376,10 +430,10 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
                             Jump to Row
                           </Button>
                           {error.autoFixValue !== undefined && (
-                            <Button 
-                              size="xs" 
-                              variant="light" 
-                              color="green" 
+                            <Button
+                              size="xs"
+                              variant="light"
+                              color="green"
                               leftSection={<IconLogicAnd size="0.7rem" />}
                               onClick={() => applyAutoFix(error)}
                               loading={fixingErrors.has(error.id)}
@@ -402,7 +456,7 @@ export default function ValidationPanel({ onJumpToRow }: ValidationPanelProps) {
         <Paper p="sm" style={{ backgroundColor: '#f8f9fa' }}>
           <Group justify="space-between">
             <Text size="xs" c="dimmed">
-              💡 <strong>How to fix issues:</strong> Use "Auto-fix" for automatic repairs, 
+              💡 <strong>How to fix issues:</strong> Use "Auto-fix" for automatic repairs,
               "Jump to Row" to navigate, or click highlighted cells to edit manually.
             </Text>
             {fixableErrorsCount > 0 && (
