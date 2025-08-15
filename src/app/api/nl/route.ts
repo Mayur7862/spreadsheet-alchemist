@@ -41,9 +41,20 @@ export async function POST(req: Request) {
   const base  = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
   const model = process.env.OLLAMA_MODEL || 'qwen2.5:0.5b-instruct';
 
-  const pre = await preflight(base).catch((e) => ({ ok: false, error: String(e) }));
-  if (!pre?.ok) return NextResponse.json({ error: 'AI backend not reachable', reason: 'preflight_failed', preflight: pre }, { status: 502 });
-  if (!pre.models.includes(model)) return NextResponse.json({ error: `Model "${model}" not found`, reason: 'model_missing', available: pre.models }, { status: 502 });
+ const pre: Preflight = await preflight(base).catch<PreflightErr>((e) => ({ ok: false as const, error: String(e) }));
+
+if (!('models' in pre)) {
+  return NextResponse.json(
+    { error: 'AI backend not reachable', reason: 'preflight_failed', preflight: pre },
+    { status: 502 }
+  );
+}
+if (!pre.models.includes(model)) {
+  return NextResponse.json(
+    { error: `Model "${model}" not found`, reason: 'model_missing', available: pre.models },
+    { status: 502 }
+  );
+}
 
   const sys = systemPrompt();
   const p1 = userPrompt(entity, text, schema, true);
