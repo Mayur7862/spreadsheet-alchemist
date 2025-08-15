@@ -1,298 +1,302 @@
 // src/components/FileUploader.tsx
 'use client';
-import { useState } from 'react';
-import { 
-  Button, 
-  Group, 
-  FileInput, 
-  Text, 
-  Paper, 
+
+import { useMemo, useState } from 'react';
+import {
+  Card,
+  Group,
+  Button,
+  Text,
   Stack,
-  Alert,
-  LoadingOverlay,
-  List,
+  SegmentedControl,
+  FileInput,
   Badge,
-  Tabs
+  Alert,
+  Checkbox,
+  Divider,
 } from '@mantine/core';
-import { 
-  IconUpload, 
-  IconCheck, 
-  IconX, 
-  IconFileSpreadsheet, 
-  IconFileText
-} from '@tabler/icons-react';
-import { parseAnyFile, ParsedData } from '../utils/parseFile';
-import { useDataStore } from '../store/useDataStore';
-import { useValidationStore } from '../store/useValidationStore';
-import { validateAllData } from '../utils/validators';
+import { IconFileSpreadsheet, IconFiles, IconCheck, IconAlertTriangle, IconDownload } from '@tabler/icons-react';
+
+import { useDataStore } from '@/store/useDataStore';
+import { useValidationStore } from '@/store/useValidationStore';
+import { validateAllData } from '@/utils/validators';
+
+import type { ParsedData } from '@/utils/parseFile';
+import { parseAnyFile } from '@/utils/parseFile';
+
+import Papa from 'papaparse';
+import * as XLSX from 'xlsx';
+
+type Mode = 'single' | 'multiple';
+type ExportMode = 'workbook' | 'separate';
 
 export default function FileUploader() {
-  // State for upload process
-  const [loading, setLoading] = useState(false);
-  const [uploadResult, setUploadResult] = useState<ParsedData | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  // base setters
+  const setClients = useDataStore((s) => s.setClients);
+  const setWorkers = useDataStore((s) => s.setWorkers);
+  const setTasks   = useDataStore((s) => s.setTasks);
+  const setFiltered = useDataStore((s) => s.setFiltered);
 
-  // Data store
-  const clients = useDataStore((state) => state.clients);
-  const workers = useDataStore((state) => state.workers);
-  const tasks = useDataStore((state) => state.tasks);
-  const setClients = useDataStore((state) => state.setClients);
-  const setWorkers = useDataStore((state) => state.setWorkers);
-  const setTasks = useDataStore((state) => state.setTasks);
+  // current data (for export)
+  const clients = useDataStore((s) => s.clients);
+  const workers = useDataStore((s) => s.workers);
+  const tasks   = useDataStore((s) => s.tasks);
 
-  // Validation store
-  const { setErrors, setValidating, clearErrors } = useValidationStore();
+  const { setErrors, setValidating } = useValidationStore();
 
-  // Handle any file (Excel or CSV) - SINGLE FUNCTION DEFINITION
-  const handleFileUpload = async (file: File | null) => {
+  const [mode, setMode] = useState<Mode>('single');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string>('');
+  const [warn, setWarn] = useState<string>('');
+
+  // export controls
+  const [exportMode, setExportMode] = useState<ExportMode>('workbook');
+  const [includeRules, setIncludeRules] = useState<boolean>(false);
+
+  const clearViews = () => {
+    (['clients', 'workers', 'tasks'] as const).forEach((e) => setFiltered(e, null));
+  };
+
+  // validate AFTER store updates flush
+  const applyBaseAndValidate = (c: any[], w: any[], t: any[]) => {
+    setClients(c);
+    setWorkers(w);
+    setTasks(t);
+    clearViews();
+
+    setTimeout(() => {
+      setValidating(true);
+      const errs = validateAllData(c, w, t);
+      setErrors(errs);
+      setValidating(false);
+    }, 0);
+  };
+
+  /** Handle a single file (CSV or Excel workbook). */
+  const handleSingleFile = async (file: File | null) => {
     if (!file) return;
-    
-    setLoading(true);
-    setUploadError(null);
-    setUploadResult(null);
-    clearErrors(); // Clear previous validation errors
-    
+    setBusy(true); setWarn(''); setStatus('');
+
     try {
-      console.log('Uploading file:', file.name);
-      const result = await parseAnyFile(file);
-      
-      const ext = file.name.split('.').pop()?.toLowerCase();
-      
-      // Store the data before validation
-      let finalClients: any[] = [];
-      let finalWorkers: any[] = [];
-      let finalTasks: any[] = [];
-      
-      if (ext === 'xlsx' || ext === 'xls') {
-        // Excel: Replace all data
-        setClients(result.clients);
-        setWorkers(result.workers);
-        setTasks(result.tasks);
-        finalClients = result.clients;
-        finalWorkers = result.workers;
-        finalTasks = result.tasks;
-      } else if (ext === 'csv') {
-        // CSV: Merge with existing data
-        finalClients = result.clients.length > 0 ? [...clients, ...result.clients] : clients;
-        finalWorkers = result.workers.length > 0 ? [...workers, ...result.workers] : workers;
-        finalTasks = result.tasks.length > 0 ? [...tasks, ...result.tasks] : tasks;
-        
-        if (result.clients.length > 0) {
-          setClients(finalClients);
-        }
-        if (result.workers.length > 0) {
-          setWorkers(finalWorkers);
-        }
-        if (result.tasks.length > 0) {
-          setTasks(finalTasks);
-        }
-      }
-      
-      setUploadResult(result);
-      console.log('File upload complete:', {
-        clients: result.clients.length,
-        workers: result.workers.length,
-        tasks: result.tasks.length,
-        errors: result.errors.length
-      });
-      
-      // 🚀 TRIGGER VALIDATION AFTER UPLOAD
-      if (finalClients.length > 0 || finalWorkers.length > 0 || finalTasks.length > 0) {
-        setTimeout(() => {
-          console.log('🔍 Starting post-upload validation...');
-          setValidating(true);
-          
-          const validationErrors = validateAllData(finalClients, finalWorkers, finalTasks);
-          setErrors(validationErrors);
-          setValidating(false);
-          
-          console.log('✅ Validation complete:', validationErrors.length, 'issues found');
-        }, 800);
-      }
-      
-    } catch (error) {
-      console.error('Error uploading file:', error);
-      setUploadError(error instanceof Error ? error.message : 'Unknown error occurred');
+      const res = await parseAnyFile(file);
+      applyBaseAndValidate(res.clients, res.workers, res.tasks);
+
+      const counts = `Loaded: ${res.clients.length} clients, ${res.workers.length} workers, ${res.tasks.length} tasks`;
+      setStatus(counts);
+
+      if (res.errors.length) setWarn(`Notes: ${res.errors.join(' • ')}`);
+    } catch (e: unknown) {
+      setWarn(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
-  const clearAllData = () => {
-    setClients([]);
-    setWorkers([]);
-    setTasks([]);
-    setUploadResult(null);
-    setUploadError(null);
-    clearErrors();
+  /** Handle multiple files (any mix of CSV/XLS/XLSX). */
+  const handleMultipleFiles = async (filesOrNull: File[] | File | null) => {
+    if (!filesOrNull) return;
+    const files = Array.isArray(filesOrNull) ? filesOrNull : [filesOrNull];
+    if (files.length === 0) return;
+
+    setBusy(true); setWarn(''); setStatus('');
+
+    const bucket: ParsedData = { clients: [], workers: [], tasks: [], errors: [] };
+
+    try {
+      for (const f of files) {
+        const res = await parseAnyFile(f);
+        bucket.clients.push(...res.clients);
+        bucket.workers.push(...res.workers);
+        bucket.tasks.push(...res.tasks);
+        if (res.errors?.length) bucket.errors.push(...res.errors);
+      }
+
+      if (bucket.clients.length + bucket.workers.length + bucket.tasks.length === 0) {
+        setWarn('No recognizable data found. Ensure filenames or headers indicate Clients/Workers/Tasks.');
+        return;
+      }
+
+      applyBaseAndValidate(bucket.clients, bucket.workers, bucket.tasks);
+
+      const counts = `Loaded: ${bucket.clients.length} clients, ${bucket.workers.length} workers, ${bucket.tasks.length} tasks`;
+      setStatus(counts);
+
+      if (bucket.errors.length) setWarn(`Notes: ${bucket.errors.join(' • ')}`);
+    } catch (e: unknown) {
+      setWarn(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const totalRecords = clients.length + workers.length + tasks.length;
+  /* ----------------- EXPORTS ----------------- */
+
+  const totalRows = useMemo(
+    () => clients.length + workers.length + tasks.length,
+    [clients.length, workers.length, tasks.length]
+  );
+
+  const downloadBlob = (filename: string, data: BlobPart, mime: string) => {
+    const blob = new Blob([data], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportWorkbook = () => {
+    const wb = XLSX.utils.book_new();
+    const wsClients = XLSX.utils.json_to_sheet(clients);
+    const wsWorkers = XLSX.utils.json_to_sheet(workers);
+    const wsTasks   = XLSX.utils.json_to_sheet(tasks);
+    XLSX.utils.book_append_sheet(wb, wsClients, 'Clients');
+    XLSX.utils.book_append_sheet(wb, wsWorkers, 'Workers');
+    XLSX.utils.book_append_sheet(wb, wsTasks,   'Tasks');
+
+    const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    downloadBlob('spreadsheet-alchemist-data.xlsx', buf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  };
+
+  const exportSeparateCSVs = () => {
+    if (clients.length) {
+      const csv = Papa.unparse(clients as any); // data already normalized to validator-friendly strings
+      downloadBlob('clients.csv', csv, 'text/csv;charset=utf-8;');
+    }
+    if (workers.length) {
+      const csv = Papa.unparse(workers as any);
+      downloadBlob('workers.csv', csv, 'text/csv;charset=utf-8;');
+    }
+    if (tasks.length) {
+      const csv = Papa.unparse(tasks as any);
+      downloadBlob('tasks.csv', csv, 'text/csv;charset=utf-8;');
+    }
+  };
+
+  const getRulesJSON = () => {
+    // Try to read from a global left by your RuleBuilder (optional). Fallback to a minimal placeholder.
+    if (typeof window !== 'undefined') {
+      const w = window as unknown as { rulesJSON?: unknown; __rules?: unknown };
+      if (w.rulesJSON) return w.rulesJSON;
+      if (w.__rules) return w.__rules;
+    }
+    return { rules: [], note: 'No rules store found; placeholder generated.', generatedAt: new Date().toISOString() };
+  };
+
+  const exportRulesIfNeeded = () => {
+    if (!includeRules) return;
+    const rules = getRulesJSON();
+    const json = JSON.stringify(rules, null, 2);
+    downloadBlob('rules.json', json, 'application/json');
+  };
+
+  const handleDownload = () => {
+    if (totalRows === 0) {
+      setWarn('Nothing to download yet. Please upload or edit data first.');
+      return;
+    }
+    if (exportMode === 'workbook') exportWorkbook();
+    else exportSeparateCSVs();
+    exportRulesIfNeeded();
+  };
 
   return (
-    <Paper p="lg" withBorder>
-      <LoadingOverlay visible={loading} />
-      
+    <Card withBorder radius="md" p="md">
       <Stack gap="md">
+        {/* Upload section */}
         <Group justify="space-between">
-          <div>
-            <Text size="lg" fw={600}>📊 Upload Your Data</Text>
-            <Text size="sm" c="dimmed">
-              Excel file (all-in-one) or individual CSV files
-            </Text>
-          </div>
-          {totalRecords > 0 && (
-            <Group gap="xs">
-              <Badge color="green" variant="light">
-                {totalRecords} Records Loaded
-              </Badge>
-              <Button size="xs" variant="outline" color="red" onClick={clearAllData}>
-                Clear All
-              </Button>
-            </Group>
-          )}
+          <Group>
+            <Text fw={600}>Upload data</Text>
+            <Badge variant="light" color="blue">Workbook or separate files</Badge>
+          </Group>
+
+          <SegmentedControl
+            value={mode}
+            onChange={(v) => setMode(v as Mode)}
+            data={[
+              { label: 'Single workbook / CSV', value: 'single' },
+              { label: 'Multiple files', value: 'multiple' },
+            ]}
+          />
         </Group>
 
-        <Tabs defaultValue="any" color="blue">
-          <Tabs.List>
-            <Tabs.Tab value="any" leftSection={<IconFileSpreadsheet size="1rem" />}>
-              📁 Any File
-            </Tabs.Tab>
-            <Tabs.Tab value="excel" leftSection={<IconFileSpreadsheet size="1rem" />}>
-              📊 Excel (Multi-Sheet)
-            </Tabs.Tab>
-            <Tabs.Tab value="csv" leftSection={<IconFileText size="1rem" />}>
-              📄 CSV Files
-            </Tabs.Tab>
-          </Tabs.List>
+        {mode === 'single' ? (
+          <FileInput
+            label="Upload a single file: Excel (multi/single-sheet) or CSV"
+            placeholder="Choose file"
+            accept=".xlsx,.xls,.csv"
+            leftSection={<IconFileSpreadsheet size={16} />}
+            onChange={handleSingleFile}
+            disabled={busy}
+          />
+        ) : (
+          <FileInput
+            label="Upload 1–3 files (CSV/XLSX/XLS). They can be in any order."
+            placeholder="Choose files"
+            accept=".csv,.xlsx,.xls"
+            multiple
+            leftSection={<IconFiles size={16} />}
+            onChange={(value) => handleMultipleFiles(value as unknown as File[] | null)}
+            disabled={busy}
+          />
+        )}
 
-          <Tabs.Panel value="any" pt="md">
-            <Stack gap="sm">
-              <FileInput
-                placeholder="Select Excel (.xlsx) or CSV (.csv) file"
-                accept=".xlsx,.xls,.csv"
-                leftSection={<IconUpload size={20} />}
-                onChange={handleFileUpload}
-                size="lg"
-              />
-              <Text size="xs" c="dimmed">
-                • Excel: Automatically loads all 3 sheets (clients, workers, tasks)<br/>
-                • CSV: Auto-detects type from filename or headers
-              </Text>
-            </Stack>
-          </Tabs.Panel>
+        <Group>
+          <Button variant="light" disabled={busy} onClick={() => { setStatus(''); setWarn(''); }}>
+            Clear messages
+          </Button>
+        </Group>
 
-          <Tabs.Panel value="excel" pt="md">
-            <Stack gap="sm">
-              <FileInput
-                placeholder="Select your Excel file with multiple sheets"
-                accept=".xlsx,.xls"
-                leftSection={<IconFileSpreadsheet size={20} />}
-                onChange={handleFileUpload}
-                size="lg"
-              />
-              <Paper p="sm" style={{ backgroundColor: '#f0f8ff' }}>
-                <Text size="xs" fw={500} mb="xs">📋 Excel Requirements:</Text>
-                <List size="xs" spacing={2}>
-                  <List.Item>3 sheets named like: "Clients", "Workers", "Tasks"</List.Item>
-                  <List.Item>Or auto-detection by column headers</List.Item>
-                  <List.Item>Proper column headers in each sheet</List.Item>
-                </List>
-              </Paper>
-            </Stack>
-          </Tabs.Panel>
-
-          <Tabs.Panel value="csv" pt="md">
-            <Stack gap="sm">
-              <FileInput
-                placeholder="Select CSV file (clients.csv, workers.csv, or tasks.csv)"
-                accept=".csv"
-                leftSection={<IconFileText size={20} />}
-                onChange={handleFileUpload}
-                size="lg"
-              />
-              <Paper p="sm" style={{ backgroundColor: '#f0fff0' }}>
-                <Text size="xs" fw={500} mb="xs">📄 CSV Tips:</Text>
-                <List size="xs" spacing={2}>
-                  <List.Item>Filename should contain "client", "worker", or "task"</List.Item>
-                  <List.Item>Multiple CSV uploads will merge data</List.Item>
-                  <List.Item>Headers auto-detected: ClientID, WorkerID, TaskID</List.Item>
-                </List>
-              </Paper>
-            </Stack>
-          </Tabs.Panel>
-        </Tabs>
-
-        {/* Success Result */}
-        {uploadResult && !uploadError && (
+        {status && (
           <Alert color="green" icon={<IconCheck size={16} />}>
-            <Stack gap="xs">
-              <Text fw={600}>✅ File processed successfully!</Text>
-              <Group gap="lg">
-                {uploadResult.clients.length > 0 && (
-                  <Badge color="blue" variant="light">
-                    +{uploadResult.clients.length} Clients
-                  </Badge>
-                )}
-                {uploadResult.workers.length > 0 && (
-                  <Badge color="green" variant="light">
-                    +{uploadResult.workers.length} Workers
-                  </Badge>
-                )}
-                {uploadResult.tasks.length > 0 && (
-                  <Badge color="orange" variant="light">
-                    +{uploadResult.tasks.length} Tasks
-                  </Badge>
-                )}
-              </Group>
-              
-              {uploadResult.errors.length > 0 && (
-                <div>
-                  <Text size="sm" fw={500} c="orange">⚠️ Parsing Warnings:</Text>
-                  <List size="sm">
-                    {uploadResult.errors.map((error, idx) => (
-                      <List.Item key={idx}>
-                        <Text size="xs" c="orange">{error}</Text>
-                      </List.Item>
-                    ))}
-                  </List>
-                </div>
-              )}
-              
-              <Text size="xs" c="dimmed" mt="xs">
-                🔍 Running comprehensive validation...
-              </Text>
-            </Stack>
+            {status}
+          </Alert>
+        )}
+        {warn && (
+          <Alert color="yellow" icon={<IconAlertTriangle size={16} />}>
+            {warn}
           </Alert>
         )}
 
-        {/* Error Result */}
-        {uploadError && (
-          <Alert color="red" icon={<IconX size={16} />}>
-            <Text fw={600}>❌ Upload failed</Text>
-            <Text size="sm">{uploadError}</Text>
-          </Alert>
-        )}
+        <Text size="xs" c="dimmed">
+          Auto-detects entity by filename (e.g., <i>clients.csv</i>) or headers (<code>ClientID</code>, <code>WorkerID</code>, <code>TaskID</code>). Validator runs right after upload.
+        </Text>
 
-        {/* Current Data Summary */}
-        {totalRecords > 0 && (
-          <Paper p="md" style={{ backgroundColor: '#f8fdf8', border: '1px solid #e6f4e6' }}>
-            <Group justify="space-between">
-              <div>
-                <Text size="sm" fw={500}>📊 Current Dataset:</Text>
-                <Group gap="md" mt="xs">
-                  <Text size="xs">👥 {clients.length} Clients</Text>
-                  <Text size="xs">👷 {workers.length} Workers</Text>
-                  <Text size="xs">📋 {tasks.length} Tasks</Text>
-                </Group>
-              </div>
-              <Badge color="green" size="lg">
-                {totalRecords} Total
-              </Badge>
-            </Group>
-          </Paper>
-        )}
+        {/* Export section */}
+        <Divider my="sm" />
+        <Group justify="space-between">
+          <Group>
+            <Text fw={600}>Export data</Text>
+            <Badge variant="light" color="green">Download your edits</Badge>
+          </Group>
+
+          <SegmentedControl
+            value={exportMode}
+            onChange={(v) => setExportMode(v as ExportMode)}
+            data={[
+              { label: 'Single Excel (3 sheets)', value: 'workbook' },
+              { label: 'Separate CSVs', value: 'separate' },
+            ]}
+          />
+        </Group>
+
+        <Group justify="space-between">
+          <Checkbox
+            checked={includeRules}
+            onChange={(e) => setIncludeRules(e.currentTarget.checked)}
+            label="Also download rules.json"
+          />
+          <Button
+            leftSection={<IconDownload size={16} />}
+            onClick={handleDownload}
+            disabled={busy || totalRows === 0}
+          >
+            Download
+          </Button>
+        </Group>
       </Stack>
-    </Paper>
+    </Card>
   );
 }
