@@ -12,9 +12,6 @@ import { validateAllData } from '@/utils/validators';
 import NLSearchBar from '@/components/NLSearchBar';
 import RuleBuilderPanel from '@/components/RuleBuilderPanel';
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
-
 /* ===================== Types ===================== */
 type Entity = 'clients' | 'workers' | 'tasks';
 
