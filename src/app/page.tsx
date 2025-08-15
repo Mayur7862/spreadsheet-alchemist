@@ -1,4 +1,4 @@
-// src/app/page.tsx — SINGLE SOURCE OF TRUTH fix (typed) for filtered views
+// src/app/page.tsx
 'use client';
 
 import { Container, Tabs, Text, Badge, Button, Group, Space, Alert } from '@mantine/core';
@@ -11,9 +11,7 @@ import { useValidationStore } from '@/store/useValidationStore';
 import { validateAllData } from '@/utils/validators';
 import NLSearchBar from '@/components/NLSearchBar';
 import RuleBuilderPanel from '@/components/RuleBuilderPanel';
-import type { Preflight, PreflightErr } from '@/types/api';
 
-// Optional (helps avoid SSG build issues on Vercel)
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
@@ -33,34 +31,28 @@ type RowFor<E extends Entity> =
 
 type FilterToken = string | Partial<ClientRow & WorkerRow & TaskRow>;
 
-/* ========== Stable ID getter (overloads) ========== */
-function getEntityId(row: ClientRow | null | undefined, ent: 'clients'): string;
-function getEntityId(row: WorkerRow | null | undefined, ent: 'workers'): string;
-function getEntityId(row: TaskRow   | null | undefined, ent: 'tasks'  ): string;
-// Impl
-function getEntityId(row: AnyRow | null | undefined, ent: Entity): string {
+/* ===== Stable ID (single generic, no overloads) ===== */
+function getEntityId<E extends Entity>(ent: E, row: RowFor<E> | null | undefined): string {
   if (!row) return '';
-  switch (ent) {
-    case 'clients': return String((row as ClientRow).ClientID ?? row.id ?? '');
-    case 'workers': return String((row as WorkerRow).WorkerID ?? row.id ?? '');
-    case 'tasks':   return String((row as TaskRow).TaskID   ?? row.id ?? '');
-  }
+  if (ent === 'clients') return String((row as ClientRow).ClientID ?? row.id ?? '');
+  if (ent === 'workers') return String((row as WorkerRow).WorkerID ?? row.id ?? '');
+  return String((row as TaskRow).TaskID ?? row.id ?? '');
 }
 
 /* ===== Map helper (typed) : id -> base row ===== */
 function mapById<E extends Entity>(rows: RowFor<E>[], ent: E): Map<string, RowFor<E>> {
   const m = new Map<string, RowFor<E>>();
-  for (const r of rows) m.set(getEntityId(r as any, ent), r);
+  for (const r of rows) m.set(getEntityId(ent, r), r);
   return m;
 }
 
 export default function HomePage() {
-  /* ---------- Base data (cast to precise row types) ---------- */
+  // Base data (narrow to concrete row shapes)
   const clients = useDataStore((s) => s.clients) as ClientRow[];
   const workers = useDataStore((s) => s.workers) as WorkerRow[];
   const tasks   = useDataStore((s) => s.tasks)   as TaskRow[];
 
-  /* ---------- Filtered: accepts IDs or row objects ---------- */
+  // Filtered can hold IDs or row objects (non-destructive views)
   const filtered = useDataStore((s) => s.filtered) as Record<Entity, string[] | AnyRow[] | null | undefined>;
   const setFiltered = useDataStore((s) => s.setFiltered) as (
     entity: Entity,
@@ -79,7 +71,12 @@ export default function HomePage() {
     if (applyingFixRef.current) return; // guard: don't validate mid-fix
     setValidating(true);
     setTimeout(() => {
-      const next = validateAllData(clients, workers, tasks);
+      // Cast with Parameters<typeof validateAllData> to satisfy expected types safely
+      const next = validateAllData(
+        clients as unknown as Parameters<typeof validateAllData>[0],
+        workers as unknown as Parameters<typeof validateAllData>[1],
+        tasks   as unknown as Parameters<typeof validateAllData>[2]
+      );
       setErrors(next);
       setValidating(false);
     }, 100);
@@ -119,9 +116,7 @@ export default function HomePage() {
     // Normalize tokens to IDs
     const ids = (f as FilterToken[]).map((item) => {
       if (typeof item === 'string') return item;
-      if (ent === 'clients') return getEntityId(item as ClientRow, ent);
-      if (ent === 'workers') return getEntityId(item as WorkerRow, ent);
-      return getEntityId(item as TaskRow, ent);
+      return getEntityId(ent, item as RowFor<E>);
     });
 
     // Project IDs -> base rows, dropping missing
@@ -143,7 +138,7 @@ export default function HomePage() {
 
   const clearBanner = () => setFilterBanner({ visible: false });
 
-  // Totals typed (avoid index signature typing warnings)
+  // Totals typed explicitly
   const totals: Record<Entity, number> = useMemo(
     () => ({ clients: clients.length, workers: workers.length, tasks: tasks.length }),
     [clients.length, workers.length, tasks.length]
@@ -181,8 +176,7 @@ export default function HomePage() {
             activeEntity={activeTab}
             onApply={(entity, filterResult) => {
               const rows = (filterResult?.rows ?? []) as AnyRow[];
-              // Store either rows or IDs; your view() handles both
-              setFiltered(entity, rows);
+              setFiltered(entity, rows); // IDs or rows ok; view() handles both
               setFilterBanner({
                 visible: true,
                 entity,
@@ -214,10 +208,11 @@ export default function HomePage() {
         <div style={{ marginTop: '2rem' }}>
           <ValidationPanel
             onJumpToRow={handleJumpToRow}
+            // Guard validator during fixes to avoid loops
             onBeforeApplyFix={() => { applyingFixRef.current = true; }}
             onAfterApplyFix={() => {
               applyingFixRef.current = false;
-              runValidation();
+              runValidation(); // re-run once after fixes settle
             }}
           />
         </div>
