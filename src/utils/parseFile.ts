@@ -219,39 +219,55 @@ export const parseMultiSheetExcel = (file: File): Promise<ParsedData> => {
 };
 
 // NEW: Function to parse single CSV file
-export const parseSingleCSV = (file: File): Promise<{ data: any[], type: 'clients' | 'workers' | 'tasks' | null }> => {
+export const parseSingleCSV = (
+  file: File
+): Promise<{ data: Record<string, unknown>[]; type: 'clients' | 'workers' | 'tasks' | null }> => {
   return new Promise((resolve, reject) => {
-    Papa.parse(file, {
+    Papa.parse<Record<string, unknown>>(file, {
       header: true,
       skipEmptyLines: true,
       transformHeader: (header: string) => header.trim(),
       complete: (results) => {
         try {
-          if (results.data.length === 0) {
+          const rows = results.data ?? [];
+          if (rows.length === 0) {
             reject(new Error('CSV file is empty'));
             return;
           }
-          
-          const headers = Object.keys(results.data[0]);
-          const dataType = detectDataType(file.name, headers);
-          
-          if (!dataType) {
-            reject(new Error('Could not detect data type. Ensure filename contains "client", "worker", or "task", or has proper headers.'));
+
+          // Narrow the first row to a plain object before Object.keys
+          const first = rows[0];
+          if (!first || typeof first !== 'object' || Array.isArray(first)) {
+            reject(new Error('Unexpected CSV row format'));
             return;
           }
-          
-          const normalizedData = results.data.map(row => normalizeRowData(row, dataType));
-          
+
+          const headers = Object.keys(first as Record<string, unknown>);
+          const dataType = detectDataType(file.name, headers);
+
+          if (!dataType) {
+            reject(
+              new Error(
+                'Could not detect data type. Ensure filename contains "client", "worker", or "task", or has proper headers.'
+              )
+            );
+            return;
+          }
+
+          // Normalize each parsed row
+          const normalizedData = rows.map((row) => normalizeRowData(row, dataType));
+
           console.log(`CSV parsed (${dataType}):`, normalizedData.length, 'records');
           resolve({ data: normalizedData, type: dataType });
         } catch (error) {
-          reject(error);
+          reject(error instanceof Error ? error : new Error(String(error)));
         }
       },
-      error: (err) => reject(err),
+      error: (err) => reject(err instanceof Error ? err : new Error(String(err))),
     });
   });
 };
+
 
 // Main function to handle any file type
 export const parseAnyFile = (file: File): Promise<ParsedData> => {
